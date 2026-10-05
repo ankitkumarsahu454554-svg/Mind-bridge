@@ -6,14 +6,22 @@ require('dotenv').config();
 const { OpenAI } = require('openai');
 const { GoogleGenAI } = require('@google/genai');
 
-const hfClient = new OpenAI({
-    baseURL: "https://router.huggingface.co/v1",
-    apiKey: process.env.HF_TOKEN || 'missing',
-});
+function getHfClient() {
+    const key = process.env.HF_TOKEN;
+    if (!key || key === 'missing') return null;
+    return new OpenAI({
+        baseURL: "https://router.huggingface.co/v1",
+        apiKey: key,
+    });
+}
 
-const geminiClient = new GoogleGenAI({ 
-    apiKey: process.env.GEMINI_API_KEY || 'missing' 
-});
+function getGeminiClient() {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key || key === 'missing') return null;
+    return new GoogleGenAI({ 
+        apiKey: key 
+    });
+}
 
 const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
 const ROOT = __dirname;
@@ -74,7 +82,24 @@ async function parseRequestBody(req) {
 
 async function handleRequest(req, res) {
     try {
-        const cleanUrl = decodeURI(req.url.split('?')[0]);
+        // Universal CORS headers for API and static routes
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+        // Fast response for preflight OPTIONS requests
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204);
+            res.end();
+            return;
+        }
+
+        // Support standard requests as well as Vercel serverless rewrite headers
+        const rawUrl = req.headers['x-matched-path'] || req.headers['x-forwarded-uri'] || req.url;
+        let cleanUrl = decodeURI(rawUrl.split('?')[0]);
+        if (cleanUrl === '/api/index.js' || cleanUrl === '/api/index') {
+            cleanUrl = '/api';
+        }
         
         // Health check for API routes
         if (cleanUrl === '/api' || cleanUrl === '/api/health') {
@@ -152,14 +177,13 @@ async function handleRequest(req, res) {
                 });
                 const resBody = await backendRes.text();
                 res.writeHead(backendRes.status, {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
+                    'Content-Type': 'application/json'
                 });
                 res.end(resBody);
             } catch (err) {
-                console.error('Error forwarding chat history request to BACKEND_URL:', err.message);
-                res.writeHead(502, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Failed to communicate with internal backend service: ' + err.message }));
+                // If backend is unavailable or not running, gracefully return empty history for client-side chat
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ messages: [], notice: 'External backend history service offline, operating in client-local mode' }));
             }
             return;
         }
@@ -202,7 +226,8 @@ async function handleRequest(req, res) {
                     }
 
                     if (provider === 'gemini') {
-                        if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'missing') {
+                        const gemini = getGeminiClient();
+                        if (!gemini) {
                             res.writeHead(500, { 'Content-Type': 'application/json' });
                             res.end(JSON.stringify({ error: 'GEMINI_API_KEY missing in server environment.' }));
                             return;
@@ -218,11 +243,11 @@ async function handleRequest(req, res) {
                         chatContents.push("user: " + userMessage);
 
                         let responseText = null;
-                        let modelUsed = 'gemini-3.8-flash';
+                        let modelUsed = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
                         try {
-                            const response = await geminiClient.models.generateContent({
-                                model: "gemini-3.8-flash",
+                            const response = await gemini.models.generateContent({
+                                model: modelUsed,
                                 contents: chatContents.join('\n'),
                                 config: {
                                     systemInstruction: systemPrompt
@@ -232,7 +257,7 @@ async function handleRequest(req, res) {
                                 responseText = response.text;
                             }
                         } catch (geminiErr) {
-                            console.warn('Gemini 3.8 Flash temporary error, utilizing empathetic assistant fallback:', geminiErr.message);
+                            console.warn(`Gemini (${modelUsed}) temporary error, utilizing empathetic assistant fallback:`, geminiErr.message);
                             // Detect crisis phrases directly for immediate safety
                             const isCrisis = /(suicid|kill myself|end my life|want to die|self-?harm|hurt myself|no reason to live|mar jaana|khatam)/i.test(userMessage);
                             if (isCrisis) {
@@ -253,7 +278,8 @@ async function handleRequest(req, res) {
                     }
                     
                     if (provider === 'huggingface') {
-                        if (!process.env.HF_TOKEN || process.env.HF_TOKEN === 'missing') {
+                        const hf = getHfClient();
+                        if (!hf) {
                             res.writeHead(500, { 'Content-Type': 'application/json' });
                             res.end(JSON.stringify({ error: 'HF_TOKEN missing in server environment.' }));
                             return;
@@ -266,7 +292,7 @@ async function handleRequest(req, res) {
                         messages.unshift({ role: 'system', content: systemPrompt });
                         messages.push({ role: 'user', content: userMessage });
 
-                        const response = await hfClient.chat.completions.create({
+                        const response = await hf.chat.completions.create({
                             model: "google/gemma-4-E4B-it",
                             messages: messages
                         });

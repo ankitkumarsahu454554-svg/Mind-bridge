@@ -1,6 +1,10 @@
 # Environment variables - NEVER commit these
 .env
+.env.*
 *.env
+!.env.example
+.vercel
+
 
 # Python
 __pycache__/

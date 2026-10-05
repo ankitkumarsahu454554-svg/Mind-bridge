@@ -6,8 +6,7 @@ class MindBridgeChatAPI {
         this.websocket = null;
     }
 
-    // Send message via REST API
-    async sendMessage(message, personality = "supportive", provider = "openrouter") {
+    async sendMessage(message, personality = "supportive", provider = "gemini") {
         try {
             const response = await fetch(`/api/chat`, {
                 method: 'POST',
@@ -266,7 +265,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const personality = personalitySelect ? personalitySelect.value : "supportive";
             
             // Send message to API
-            const response = await chatAPI.sendMessage(message, personality, 'openrouter');
+            const response = await chatAPI.sendMessage(message, personality, 'gemini');
             
             // Handle crisis alert
             if (response.crisis_alert) {
