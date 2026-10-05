@@ -2,7 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
-require('dotenv').config();
+const ROOT = path.resolve(__dirname, '..');
+require('dotenv').config({ path: path.join(ROOT, '.env') });
 const { OpenAI } = require('openai');
 const { GoogleGenAI } = require('@google/genai');
 
@@ -24,7 +25,6 @@ function getGeminiClient() {
 }
 
 const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
-const ROOT = __dirname;
 
 // Vercel Service Binding for internal FastAPI backend service
 const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
@@ -33,9 +33,14 @@ function getProfilesFilePath() {
     const defaultPath = path.join(ROOT, 'user_profiles.json');
     if (process.env.VERCEL) {
         const tmpPath = path.join('/tmp', 'user_profiles.json');
-        if (!fs.existsSync(tmpPath) && fs.existsSync(defaultPath)) {
+        if (!fs.existsSync(tmpPath)) {
             try {
-                fs.copyFileSync(defaultPath, tmpPath);
+                if (fs.existsSync(defaultPath)) {
+                    fs.copyFileSync(defaultPath, tmpPath);
+                } else {
+                    const seed = require('../user_profiles.json');
+                    fs.writeFileSync(tmpPath, JSON.stringify(seed, null, 2), 'utf8');
+                }
             } catch (e) {}
         }
         return tmpPath;
@@ -80,6 +85,23 @@ async function parseRequestBody(req) {
     });
 }
 
+function getCleanUrl(req) {
+    const candidates = [
+        req.headers['x-forwarded-uri'],
+        req.url,
+        req.headers['x-matched-path']
+    ];
+    for (const candidate of candidates) {
+        if (candidate && typeof candidate === 'string') {
+            const parsed = decodeURI(candidate.split('?')[0]);
+            if (parsed && parsed !== '/api/index.js' && parsed !== '/api/index') {
+                return parsed;
+            }
+        }
+    }
+    return '/api';
+}
+
 async function handleRequest(req, res) {
     try {
         // Universal CORS headers for API and static routes
@@ -95,11 +117,7 @@ async function handleRequest(req, res) {
         }
 
         // Support standard requests as well as Vercel serverless rewrite headers
-        const rawUrl = req.headers['x-matched-path'] || req.headers['x-forwarded-uri'] || req.url;
-        let cleanUrl = decodeURI(rawUrl.split('?')[0]);
-        if (cleanUrl === '/api/index.js' || cleanUrl === '/api/index') {
-            cleanUrl = '/api';
-        }
+        const cleanUrl = getCleanUrl(req);
         
         // Health check for API routes
         if (cleanUrl === '/api' || cleanUrl === '/api/health') {
@@ -423,6 +441,20 @@ async function handleRequest(req, res) {
                 return;
             }
 
+        // If an API route wasn't handled above, return 404 JSON (do not treat as static file)
+        if (cleanUrl.startsWith('/api')) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `API route not found: ${cleanUrl}` }));
+            return;
+        }
+
+        // On Vercel, static frontend files are served directly by Edge CDN
+        if (process.env.VERCEL) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Not found: ${cleanUrl}` }));
+            return;
+        }
+
         let relativePath = cleanUrl === '/' ? '/index.html' : cleanUrl;
         let filePath = path.join(ROOT, relativePath);
 
@@ -489,6 +521,7 @@ function startServer(port) {
         if (!process.env.NO_WATCH && !process.env.VERCEL && process.env.NODE_ENV !== 'production') {
             console.log('⚡ Starting Tailwind CSS watcher...');
             tailwindProcess = spawn('npx', ['tailwindcss', '-i', './css/tailwind.css', '-o', './css/main.css', '--watch'], {
+                cwd: ROOT,
                 shell: true,
                 stdio: 'pipe'
             });
