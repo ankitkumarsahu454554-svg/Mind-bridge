@@ -2,7 +2,6 @@
   "name": "mindbridge",
   "version": "1.0.0",
   "description": "",
-  "main": "index.html",
   "dependencies": {
     "@dhiwise/component-tagger": "^1.0.10",
     "@google/genai": "^2.24.0",
